@@ -26,12 +26,21 @@ android {
     // from repository secrets). Without them, the release build is simply left unsigned.
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH")
-            if (keystorePath != null && file(keystorePath).exists()) {
+            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+            if (file(keystorePath).exists()) {
                 storeFile = file(keystorePath)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("STORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
                 keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+        create("debugConfig") {
+            val debugKeystore = file("${rootDir}/debug.keystore")
+            if (debugKeystore.exists()) {
+                storeFile = debugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
             }
         }
     }
@@ -40,6 +49,9 @@ android {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debugConfig").takeIf { it.storeFile != null }
         }
     }
 
@@ -65,6 +77,8 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.09.02"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")

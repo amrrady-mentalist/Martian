@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Marty Offline",
+  "description": "On-device card detection and perspective compositing.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
