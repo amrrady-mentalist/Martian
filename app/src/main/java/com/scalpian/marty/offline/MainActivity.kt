@@ -108,7 +108,7 @@ private fun MartyApp() {
         scope.launch {
             val card = CardCode.decode(digits, settings.suitOrder, settings.plusOne)
             val out = withContext(Dispatchers.Default) {
-                CardCompositor.composite(src, q, CardFaceRenderer.render(card))
+                CardCompositor.compositeInk(src, q, card)
             }
             if (settings.saveToGallery) withContext(Dispatchers.IO) { saveToPhoneLibrary(context, out) }
             if (settings.vibrate) vibrateOnce(context)
