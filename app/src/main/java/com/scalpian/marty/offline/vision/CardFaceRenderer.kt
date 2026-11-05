@@ -37,15 +37,31 @@ object CardFaceRenderer {
         paint.strokeWidth = 3f
         c.drawRoundRect(RectF(1.5f, 1.5f, wf - 1.5f, hf - 1.5f), 16f, 16f, paint)
 
-        val ink = if (card.suit.isRed) RED else BLACK
-        drawCorners(c, card, ink, wf, hf)
+        drawInk(c, card, wf, hf)
+        return bmp
+    }
 
+    /** The colour the card's print is drawn in (red suits / black suits). */
+    fun inkColor(card: PlayingCard): Int = if (card.suit.isRed) RED else BLACK
+
+    /**
+     * Only the print (corner indices + pips / court letter) on a fully transparent canvas:
+     * no white card, no border. The compositor prints this onto the real photographed card.
+     */
+    fun renderInk(card: PlayingCard, w: Int = 500, h: Int = 700): Bitmap {
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        drawInk(Canvas(bmp), card, w.toFloat(), h.toFloat())
+        return bmp
+    }
+
+    private fun drawInk(c: Canvas, card: PlayingCard, wf: Float, hf: Float) {
+        val ink = inkColor(card)
+        drawCorners(c, card, ink, wf, hf)
         when {
             card.value == 1 -> drawSuit(c, card.suit, wf / 2f, hf / 2f, 110f, ink)
             card.value in 2..10 -> drawPips(c, card, ink, wf, hf)
             else -> drawCourt(c, card, ink, wf, hf)
         }
-        return bmp
     }
 
     private fun drawCorners(c: Canvas, card: PlayingCard, ink: Int, w: Float, h: Float) {
