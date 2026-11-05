@@ -51,7 +51,8 @@ android {
             signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
         }
         debug {
-            signingConfig = signingConfigs.getByName("debugConfig").takeIf { it.storeFile != null }
+            val customDebug = signingConfigs.getByName("debugConfig").takeIf { it.storeFile != null }
+            signingConfig = customDebug ?: signingConfigs.getByName("debug")
         }
     }
 
