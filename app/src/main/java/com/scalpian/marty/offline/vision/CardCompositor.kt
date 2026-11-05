@@ -29,7 +29,7 @@ object CardCompositor {
 
     private class Scope {
         val mats = ArrayList<Mat>()
-        fun <T : Mat> T.t(): T { mats.add(this); return this }
+        fun <T : Mat> T.keep(): T { mats.add(this); return this }
         fun close() = mats.forEach { it.release() }
     }
 
@@ -48,24 +48,24 @@ object CardCompositor {
         val sc = Scope()
         try {
             return with(sc) {
-                val src = Mat().t()
+                val src = Mat().keep()
                 Utils.bitmapToMat(photo, src)
-                val rgb = Mat().t()
+                val rgb = Mat().keep()
                 Imgproc.cvtColor(src, rgb, Imgproc.COLOR_RGBA2RGB)
 
                 // ---- 1. flatten the card ----
                 val pts = orientedCorners(quad)
-                val quadPts = MatOfPoint2f(*pts.map { Point(it.x.toDouble(), it.y.toDouble()) }.toTypedArray()).t()
+                val quadPts = MatOfPoint2f(*pts.map { Point(it.x.toDouble(), it.y.toDouble()) }.toTypedArray()).keep()
                 val rectPts = MatOfPoint2f(
                     Point(0.0, 0.0), Point(RW.toDouble(), 0.0),
                     Point(RW.toDouble(), RH.toDouble()), Point(0.0, RH.toDouble())
-                ).t()
-                val toRect = Imgproc.getPerspectiveTransform(quadPts, rectPts).t()
-                val cardRgb = Mat().t()
+                ).keep()
+                val toRect = Imgproc.getPerspectiveTransform(quadPts, rectPts).keep()
+                val cardRgb = Mat().keep()
                 Imgproc.warpPerspective(rgb, cardRgb, toRect, Size(RW.toDouble(), RH.toDouble()), Imgproc.INTER_LINEAR)
 
                 // valid area = rounded rectangle slightly inside the card (never edit the edge)
-                val valid = Mat.zeros(RH, RW, CvType.CV_8UC1).t()
+                val valid = Mat.zeros(RH, RW, CvType.CV_8UC1).keep()
                 val inset = 8
                 val r = 26
                 Imgproc.rectangle(valid, Point((inset + r).toDouble(), inset.toDouble()),
@@ -76,155 +76,155 @@ object CardCompositor {
                     (inset + r) to (inset + r), (RW - inset - r) to (inset + r),
                     (inset + r) to (RH - inset - r), (RW - inset - r) to (RH - inset - r)
                 )) Imgproc.circle(valid, Point(cx.toDouble(), cy.toDouble()), r, Scalar(255.0), -1)
-                val validF = soft(valid, 0.0).t()
+                val validF = soft(valid, 0.0).keep()
 
                 // ---- fingers: skin-coloured blobs inside the card ----
-                val ycc = Mat().t()
-                val hsv = Mat().t()
+                val ycc = Mat().keep()
+                val hsv = Mat().keep()
                 Imgproc.cvtColor(cardRgb, ycc, Imgproc.COLOR_RGB2YCrCb)
                 Imgproc.cvtColor(cardRgb, hsv, Imgproc.COLOR_RGB2HSV)
-                val skinA = Mat().t()
-                val skinB = Mat().t()
+                val skinA = Mat().keep()
+                val skinB = Mat().keep()
                 Core.inRange(ycc, Scalar(0.0, 136.0, 77.0), Scalar(255.0, 173.0, 125.0), skinA)
                 Core.inRange(hsv, Scalar(0.0, 45.0, 0.0), Scalar(179.0, 255.0, 255.0), skinB)
-                val skinCore = Mat().t()
+                val skinCore = Mat().keep()
                 Core.bitwise_and(skinA, skinB, skinCore)
-                Imgproc.morphologyEx(skinCore, skinCore, Imgproc.MORPH_OPEN, ellipse(9).t())
-                val skinD = Mat().t()
-                Imgproc.dilate(skinCore, skinD, ellipse(5).t())
-                val skinF = soft(skinD, 1.0).t()
-                val skinCoreF = soft(skinCore, 0.8).t()
+                Imgproc.morphologyEx(skinCore, skinCore, Imgproc.MORPH_OPEN, ellipse(9).keep())
+                val skinD = Mat().keep()
+                Imgproc.dilate(skinCore, skinD, ellipse(5).keep())
+                val skinF = soft(skinD, 1.0).keep()
+                val skinCoreF = soft(skinCore, 0.8).keep()
 
                 // ---- 2. estimate the paper (colour + shading) without the print ----
-                val gray = Mat().t()
+                val gray = Mat().keep()
                 Imgproc.cvtColor(cardRgb, gray, Imgproc.COLOR_RGB2GRAY)
-                val notSkin = Mat().t()
+                val notSkin = Mat().keep()
                 Core.bitwise_not(skinD, notSkin)
-                val ok = Mat().t()
+                val ok = Mat().keep()
                 Core.bitwise_and(valid, notSkin, ok)
                 if (Core.countNonZero(ok) < 20000) return composite(photo, quad, CardFaceRenderer.render(card))
 
                 val m0 = Core.mean(gray, ok).`val`[0]
-                val above = Mat().t()
+                val above = Mat().keep()
                 Core.compare(gray, Scalar(m0), above, Core.CMP_GT)
-                val seed = Mat().t()
+                val seed = Mat().keep()
                 Core.bitwise_and(above, ok, seed)
                 if (Core.countNonZero(seed) < 5000) return composite(photo, quad, CardFaceRenderer.render(card))
                 val ref = Core.mean(gray, seed).`val`[0]
-                val bright = Mat().t()
+                val bright = Mat().keep()
                 Core.compare(gray, Scalar(0.85 * ref), bright, Core.CMP_GT)
-                val paper0 = Mat().t()
+                val paper0 = Mat().keep()
                 Core.bitwise_and(bright, ok, paper0)
 
-                val cardF = Mat().t()
+                val cardF = Mat().keep()
                 cardRgb.convertTo(cardF, CvType.CV_32FC3)
-                val maskF = soft(paper0, 0.0).t()
-                val mask3 = merge3(maskF).t()
-                val num = Mat().t()
+                val maskF = soft(paper0, 0.0).keep()
+                val mask3 = merge3(maskF).keep()
+                val num = Mat().keep()
                 Core.multiply(cardF, mask3, num)
                 Imgproc.GaussianBlur(num, num, Size(0.0, 0.0), 35.0)
-                val den = Mat().t()
+                val den = Mat().keep()
                 Imgproc.GaussianBlur(maskF, den, Size(0.0, 0.0), 35.0)
                 Core.max(den, Scalar(1e-3), den)
-                val paper = Mat().t()                       // P: smooth paper estimate, no print
-                Core.divide(num, merge3(den).t(), paper)
+                val paper = Mat().keep()                       // P: smooth paper estimate, no print
+                Core.divide(num, merge3(den).keep(), paper)
 
                 // ---- old print mask ----
-                val paper8 = Mat().t()
+                val paper8 = Mat().keep()
                 paper.convertTo(paper8, CvType.CV_8UC3)
-                val paperGray8 = Mat().t()
+                val paperGray8 = Mat().keep()
                 Imgproc.cvtColor(paper8, paperGray8, Imgproc.COLOR_RGB2GRAY)
-                val grayF = Mat().t()
-                val paperGrayF = Mat().t()
+                val grayF = Mat().keep()
+                val paperGrayF = Mat().keep()
                 gray.convertTo(grayF, CvType.CV_32F)
                 paperGray8.convertTo(paperGrayF, CvType.CV_32F, 0.88)
-                val darker = Mat().t()
+                val darker = Mat().keep()
                 Core.compare(grayF, paperGrayF, darker, Core.CMP_LT)
-                val old = Mat().t()
+                val old = Mat().keep()
                 Core.bitwise_and(darker, ok, old)
 
                 // strong red print is erased even right beside a finger
                 val chans = ArrayList<Mat>()
                 Core.split(cardRgb, chans)
-                chans.forEach { it.t() }
-                val r16 = Mat().t()
-                val g16 = Mat().t()
-                val b16 = Mat().t()
+                chans.forEach { it.keep() }
+                val r16 = Mat().keep()
+                val g16 = Mat().keep()
+                val b16 = Mat().keep()
                 chans[0].convertTo(r16, CvType.CV_16S)
                 chans[1].convertTo(g16, CvType.CV_16S)
                 chans[2].convertTo(b16, CvType.CV_16S)
-                val rg = Mat().t()
-                val rb = Mat().t()
+                val rg = Mat().keep()
+                val rb = Mat().keep()
                 Core.subtract(r16, g16, rg)
                 Core.subtract(r16, b16, rb)
-                val redA = Mat().t()
-                val redB = Mat().t()
+                val redA = Mat().keep()
+                val redB = Mat().keep()
                 Core.compare(rg, Scalar(95.0), redA, Core.CMP_GT)
                 Core.compare(rb, Scalar(75.0), redB, Core.CMP_GT)
-                val red = Mat().t()
+                val red = Mat().keep()
                 Core.bitwise_and(redA, redB, red)
                 Core.bitwise_and(red, valid, red)
                 Core.bitwise_or(old, red, old)
-                Imgproc.dilate(old, old, ellipse(7).t())
+                Imgproc.dilate(old, old, ellipse(7).keep())
 
-                val oldF = soft(old, 1.5).t()
+                val oldF = soft(old, 1.5).keep()
                 Core.multiply(oldF, validF, oldF)
-                Core.multiply(oldF, oneMinus(skinCoreF).t(), oldF)
+                Core.multiply(oldF, oneMinus(skinCoreF).keep(), oldF)
 
                 // paint the old print out: clean = card + (paper - card) * oldF
-                val diff = Mat().t()
+                val diff = Mat().keep()
                 Core.subtract(paper, cardF, diff)
-                Core.multiply(diff, merge3(oldF).t(), diff)
-                val clean = Mat().t()
+                Core.multiply(diff, merge3(oldF).keep(), diff)
+                val clean = Mat().keep()
                 Core.add(cardF, diff, clean)
 
                 // ---- 3. print the new card ----
                 val inkBmp = CardFaceRenderer.renderInk(card, RW, RH)
-                val inkRgba = Mat().t()
+                val inkRgba = Mat().keep()
                 Utils.bitmapToMat(inkBmp, inkRgba)
                 inkBmp.recycle()
                 val inkChans = ArrayList<Mat>()
                 Core.split(inkRgba, inkChans)
-                inkChans.forEach { it.t() }
-                val a = soft(inkChans[3], 0.7).t()
+                inkChans.forEach { it.keep() }
+                val a = soft(inkChans[3], 0.7).keep()
                 Core.multiply(a, validF, a)
-                Core.multiply(a, oneMinus(skinF).t(), a)     // never print on a finger
+                Core.multiply(a, oneMinus(skinF).keep(), a)     // never print on a finger
 
                 val col = CardFaceRenderer.inkColor(card)
-                val inked = Mat().t()
+                val inked = Mat().keep()
                 Core.multiply(
                     clean,
                     Scalar(Color.red(col) / 255.0, Color.green(col) / 255.0, Color.blue(col) / 255.0),
                     inked
                 )
-                val diff2 = Mat().t()
+                val diff2 = Mat().keep()
                 Core.subtract(inked, clean, diff2)
-                Core.multiply(diff2, merge3(a).t(), diff2)
-                val finalRect = Mat().t()
+                Core.multiply(diff2, merge3(a).keep(), diff2)
+                val finalRect = Mat().keep()
                 Core.add(clean, diff2, finalRect)
 
                 // where anything changed (old print erased or new print added)
-                val changed = Mat().t()
+                val changed = Mat().keep()
                 Core.max(oldF, a, changed)
 
                 // ---- 4. back into the photo, only where changed ----
                 val flags = Imgproc.INTER_LINEAR or Imgproc.WARP_INVERSE_MAP
-                val finalWarp = Mat().t()
-                val changedWarp = Mat().t()
+                val finalWarp = Mat().keep()
+                val changedWarp = Mat().keep()
                 Imgproc.warpPerspective(finalRect, finalWarp, toRect, rgb.size(), flags)
                 Imgproc.warpPerspective(changed, changedWarp, toRect, rgb.size(), flags)
                 Imgproc.GaussianBlur(changedWarp, changedWarp, Size(0.0, 0.0), 1.0)
 
-                val rgbF = Mat().t()
+                val rgbF = Mat().keep()
                 rgb.convertTo(rgbF, CvType.CV_32FC3)
-                val d3 = Mat().t()
+                val d3 = Mat().keep()
                 Core.subtract(finalWarp, rgbF, d3)
-                Core.multiply(d3, merge3(changedWarp).t(), d3)
-                val outF = Mat().t()
+                Core.multiply(d3, merge3(changedWarp).keep(), d3)
+                val outF = Mat().keep()
                 Core.add(rgbF, d3, outF)
-                val out8 = Mat().t()
+                val out8 = Mat().keep()
                 outF.convertTo(out8, CvType.CV_8UC3)
-                val outRgba = Mat().t()
+                val outRgba = Mat().keep()
                 Imgproc.cvtColor(out8, outRgba, Imgproc.COLOR_RGB2RGBA)
 
                 val result = Bitmap.createBitmap(photo.width, photo.height, Bitmap.Config.ARGB_8888)
