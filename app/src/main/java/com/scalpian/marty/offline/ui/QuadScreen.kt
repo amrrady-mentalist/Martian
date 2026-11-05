@@ -53,7 +53,8 @@ fun QuadScreen(
     detected: Quad?,
     training: Boolean,
     onConfirm: (Quad) -> Unit,
-    onRetake: () -> Unit
+    onRetake: () -> Unit,
+    onUse: (() -> Unit)? = null
 ) {
     BackHandler(onBack = onRetake)
     val start = detected ?: Quad.centered(bitmap.width, bitmap.height)
@@ -136,6 +137,12 @@ fun QuadScreen(
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF5C451), contentColor = Color.Black)
                 ) { Text("Confirm") }
+            } else if (detected != null && onUse != null) {
+                Button(
+                    onClick = onUse,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF5C451), contentColor = Color.Black)
+                ) { Text("Use this photo") }
             }
         }
     }
