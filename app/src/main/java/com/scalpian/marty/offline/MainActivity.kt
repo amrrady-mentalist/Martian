@@ -3,6 +3,7 @@ package com.scalpian.marty.offline
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -106,15 +107,31 @@ private fun MartyApp() {
         }
         working = true
         scope.launch {
-            val card = CardCode.decode(digits, settings.suitOrder, settings.plusOne)
-            val out = withContext(Dispatchers.Default) {
-                CardCompositor.compositeInk(src, q, card)
+            try {
+                val card = CardCode.decode(digits, settings.suitOrder, settings.plusOne)
+                var inkError: String? = null
+                val out = withContext(Dispatchers.Default) {
+                    try {
+                        CardCompositor.compositeInk(src, q, card)
+                    } catch (e: Throwable) {
+                        // the new method failed: remember why, and fall back to the simple full-card paste
+                        inkError = "${e.javaClass.simpleName}: ${e.message}"
+                        CardCompositor.composite(src, q, CardFaceRenderer.render(card))
+                    }
+                }
+                if (inkError != null) {
+                    Toast.makeText(context, "Ink swap failed, used simple paste. $inkError", Toast.LENGTH_LONG).show()
+                }
+                if (settings.saveToGallery) withContext(Dispatchers.IO) { saveToPhoneLibrary(context, out) }
+                if (settings.vibrate) vibrateOnce(context)
+                result = out
+                working = false
+                screen = Screen.REVEAL
+            } catch (e: Throwable) {
+                working = false
+                Toast.makeText(context, "Could not build the photo: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
+                screen = Screen.MENU
             }
-            if (settings.saveToGallery) withContext(Dispatchers.IO) { saveToPhoneLibrary(context, out) }
-            if (settings.vibrate) vibrateOnce(context)
-            result = out
-            working = false
-            screen = Screen.REVEAL
         }
     }
 
@@ -156,7 +173,8 @@ private fun MartyApp() {
                     detected = quad,
                     training = true,
                     onConfirm = {},
-                    onRetake = { screen = Screen.TRAIN_CAPTURE }
+                    onRetake = { screen = Screen.TRAIN_CAPTURE },
+                    onUse = { screen = Screen.INPUT }
                 )
             }
 
