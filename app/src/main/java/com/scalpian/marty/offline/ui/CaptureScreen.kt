@@ -183,7 +183,8 @@ fun CaptureScreen(
                 .clickable(onClick = onBack)
         )
 
-        val shutterAlign = if (leftHanded) Alignment.BottomStart else Alignment.BottomEnd
+        // shutter always in the middle; the gallery shortcut goes on the side away from your thumb
+        val shutterAlign = Alignment.BottomCenter
         val galleryAlign = if (leftHanded) Alignment.BottomEnd else Alignment.BottomStart
 
         Box(
