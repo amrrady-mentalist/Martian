@@ -109,7 +109,7 @@ fun OptionsScreen(settings: MartySettings, onBack: () -> Unit) {
         Note("Example: Queen of ${settings.suitOrder[1].label} = ${exampleCode(settings)}")
 
         SectionTitle("Camera and reveal")
-        SwitchRow("Left-handed", "Puts the shutter button on the left.", settings.leftHanded, settings::updateLeftHanded)
+        SwitchRow("Left-handed", "Moves the gallery shortcut to the right side.", settings.leftHanded, settings::updateLeftHanded)
         SwitchRow("Vibrate on reveal", null, settings.vibrate, settings::updateVibrate)
         SwitchRow(
             "Also save to phone library",
