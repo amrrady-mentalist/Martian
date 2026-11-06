@@ -4,44 +4,112 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.PointF
+import com.scalpian.marty.offline.data.PlayingCard
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-import com.scalpian.marty.offline.data.PlayingCard
 
-/**
- * Replaces the card inside [quad] with [face], warped into the same perspective.
- *
- * Steps: warp the flat face onto a slightly enlarged quad (so none of the old card peeks
- * out), match its brightness and softness to the photo, feather the edge, alpha-blend.
- */
+// ---------------------------------------------------------------------------------------------
+// Small OpenCV helpers (file-private)
+// ---------------------------------------------------------------------------------------------
+
+/** Collects every Mat created while compositing so they can all be released together. */
+private class Scope {
+    private val mats = ArrayList<Mat>()
+
+    fun <T : Mat> T.keep(): T {
+        mats.add(this)
+        return this
+    }
+
+    fun close() = mats.forEach { it.release() }
+
+    fun and(a: Mat, b: Mat): Mat { val o = Mat().keep(); Core.bitwise_and(a, b, o); return o }
+    fun or(a: Mat, b: Mat): Mat { val o = Mat().keep(); Core.bitwise_or(a, b, o); return o }
+    fun not(a: Mat): Mat { val o = Mat().keep(); Core.bitwise_not(a, o); return o }
+    fun dil(a: Mat, n: Int): Mat { val o = Mat().keep(); Imgproc.dilate(a, o, ellipse(n).keep()); return o }
+    fun lessThan(a: Mat, b: Mat): Mat { val o = Mat().keep(); Core.compare(a, b, o, Core.CMP_LT); return o }
+    fun greaterThan(a: Mat, v: Double): Mat { val o = Mat().keep(); Core.compare(a, Scalar(v), o, Core.CMP_GT); return o }
+    fun lessThan(a: Mat, v: Double): Mat { val o = Mat().keep(); Core.compare(a, Scalar(v), o, Core.CMP_LT); return o }
+    fun scaled(a: Mat, k: Double): Mat { val o = Mat().keep(); a.convertTo(o, CvType.CV_32F, k); return o }
+
+    /** 32-bit grey version of a float RGB image. */
+    fun grayOf(rgbF: Mat): Mat {
+        val p8 = Mat().keep()
+        rgbF.convertTo(p8, CvType.CV_8UC3)
+        val g8 = Mat().keep()
+        Imgproc.cvtColor(p8, g8, Imgproc.COLOR_RGB2GRAY)
+        val g = Mat().keep()
+        g8.convertTo(g, CvType.CV_32F)
+        return g
+    }
+
+    /**
+     * Smooth estimate of the paper (colour AND shading) built only from pixels where mask8 is set
+     * (normalised convolution), so print and fingers never leak into it.
+     */
+    fun paperModel(cardF: Mat, mask8: Mat, sigma: Double): Mat {
+        val m = soft(mask8, 0.0).keep()
+        val num = Mat().keep()
+        Core.multiply(cardF, merge3(m).keep(), num)
+        Imgproc.GaussianBlur(num, num, Size(0.0, 0.0), sigma)
+        val den = Mat().keep()
+        Imgproc.GaussianBlur(m, den, Size(0.0, 0.0), sigma)
+        Core.max(den, Scalar(1e-3), den)
+        val out = Mat().keep()
+        Core.divide(num, merge3(den).keep(), out)
+        return out
+    }
+}
+
+private fun ellipse(n: Int): Mat =
+    Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(n.toDouble(), n.toDouble()))
+
+/** 8-bit 0/255 mask -> float 0..1, optionally blurred. */
+private fun soft(mask8: Mat, sigma: Double): Mat {
+    val f = Mat()
+    mask8.convertTo(f, CvType.CV_32F, 1.0 / 255.0)
+    if (sigma > 0.0) Imgproc.GaussianBlur(f, f, Size(0.0, 0.0), sigma)
+    return f
+}
+
+private fun merge3(m: Mat): Mat {
+    val out = Mat()
+    Core.merge(listOf(m, m, m), out)
+    return out
+}
+
+private fun oneMinus(m: Mat): Mat {
+    val ones = Mat(m.size(), m.type(), Scalar(1.0))
+    val out = Mat()
+    Core.subtract(ones, m, out)
+    ones.release()
+    return out
+}
+
 object CardCompositor {
 
     private const val RW = 500
     private const val RH = 700
 
-    private class Scope {
-        val mats = ArrayList<Mat>()
-        fun <T : Mat> T.keep(): T { mats.add(this); return this }
-        fun close() = mats.forEach { it.release() }
-    }
-
     /**
-     * "Ink swap": instead of pasting a synthetic card over the photo, edit the REAL card.
-     *  1. Flatten the card (perspective) so everything below happens in a plain 500x700 rectangle.
-     *  2. Find the print (anything clearly darker than the estimated paper, plus strong red) and
-     *     paint it out with the paper colour/shading estimated from the card itself.
-     *  3. Print the new card's indices and pips on top, as ink that multiplies the paper shading.
-     *  4. Warp back and blend only where something changed. Fingers (skin-coloured pixels inside the
-     *     card) are never touched, so a thumb on the card stays in front, and the card's own edge,
-     *     shadow, gloss and the photo's sharpness are kept.
+     * "Ink swap": edit the REAL card instead of pasting a synthetic one.
+     *  1. Flatten the card (perspective) into a plain 500x700 rectangle.
+     *  2. Find the old print: anything darker than the estimated paper, strong red, and anything
+     *     near-black or clearly off-paper right beside a finger.
+     *  3. Fill it with a clean paper model (colour + shading, built only from untouched paper), plus
+     *     matching grain and a soft contact shadow next to fingers. Nothing is copied from fingers.
+     *  4. Print the new indices/pips as ink that multiplies the paper shading.
+     *  5. Warp back and blend only where something changed, so fingers, the card edge, its shadow and
+     *     the photo's sharpness stay original.
      * Falls back to the old full-card paste if the card can't be analysed.
      */
     fun compositeInk(photo: Bitmap, quad: Quad, card: PlayingCard): Bitmap {
@@ -64,7 +132,7 @@ object CardCompositor {
                 val cardRgb = Mat().keep()
                 Imgproc.warpPerspective(rgb, cardRgb, toRect, Size(RW.toDouble(), RH.toDouble()), Imgproc.INTER_LINEAR)
 
-                // valid area = rounded rectangle slightly inside the card (never edit the edge)
+                // valid area = rounded rectangle slightly inside the card (the edge is never edited)
                 val valid = Mat.zeros(RH, RW, CvType.CV_8UC1).keep()
                 val inset = 8
                 val r = 26
@@ -78,72 +146,51 @@ object CardCompositor {
                 )) Imgproc.circle(valid, Point(cx.toDouble(), cy.toDouble()), r, Scalar(255.0), -1)
                 val validF = soft(valid, 0.0).keep()
 
-                // ---- fingers: skin-coloured blobs inside the card ----
+                val gray = Mat().keep()
+                Imgproc.cvtColor(cardRgb, gray, Imgproc.COLOR_RGB2GRAY)
+                val grayF = Mat().keep()
+                gray.convertTo(grayF, CvType.CV_32F)
+                val grayS = Mat().keep()
+                Imgproc.GaussianBlur(grayF, grayS, Size(0.0, 0.0), 1.2)
+                val cardF = Mat().keep()
+                cardRgb.convertTo(cardF, CvType.CV_32FC3)
+
+                // ---- fingers: bright, skin-coloured blobs ----
                 val ycc = Mat().keep()
                 val hsv = Mat().keep()
                 Imgproc.cvtColor(cardRgb, ycc, Imgproc.COLOR_RGB2YCrCb)
                 Imgproc.cvtColor(cardRgb, hsv, Imgproc.COLOR_RGB2HSV)
                 val skinA = Mat().keep()
                 val skinB = Mat().keep()
-                Core.inRange(ycc, Scalar(0.0, 136.0, 77.0), Scalar(255.0, 173.0, 125.0), skinA)
-                Core.inRange(hsv, Scalar(0.0, 45.0, 0.0), Scalar(179.0, 255.0, 255.0), skinB)
-                val skinCore = Mat().keep()
-                Core.bitwise_and(skinA, skinB, skinCore)
-                Imgproc.morphologyEx(skinCore, skinCore, Imgproc.MORPH_OPEN, ellipse(9).keep())
-                val skinD = Mat().keep()
-                Imgproc.dilate(skinCore, skinD, ellipse(5).keep())
-                val skinF = soft(skinD, 1.0).keep()
-                val skinCoreF = soft(skinCore, 0.8).keep()
+                Core.inRange(ycc, Scalar(0.0, 133.0, 77.0), Scalar(255.0, 175.0, 127.0), skinA)
+                Core.inRange(hsv, Scalar(0.0, 40.0, 0.0), Scalar(179.0, 255.0, 255.0), skinB)
+                val loose = and(skinA, skinB)                                  // skin-coloured, any brightness
+                val strict = and(loose, greaterThan(gray, 88.0))               // real finger: skin-coloured AND bright
+                Imgproc.morphologyEx(strict, strict, Imgproc.MORPH_OPEN, ellipse(9).keep())
+                val notStrict = not(strict)
+                val guard = dil(strict, 3)
+                val protect = or(guard, and(loose, dil(strict, 9)))
+                val skinF = soft(dil(strict, 5), 1.0).keep()
 
-                // ---- 2. estimate the paper (colour + shading) without the print ----
-                val gray = Mat().keep()
-                Imgproc.cvtColor(cardRgb, gray, Imgproc.COLOR_RGB2GRAY)
-                val notSkin = Mat().keep()
-                Core.bitwise_not(skinD, notSkin)
-                val ok = Mat().keep()
-                Core.bitwise_and(valid, notSkin, ok)
-                if (Core.countNonZero(ok) < 20000) return composite(photo, quad, CardFaceRenderer.render(card))
-
-                val m0 = Core.mean(gray, ok).`val`[0]
-                val above = Mat().keep()
-                Core.compare(gray, Scalar(m0), above, Core.CMP_GT)
-                val seed = Mat().keep()
-                Core.bitwise_and(above, ok, seed)
-                if (Core.countNonZero(seed) < 5000) return composite(photo, quad, CardFaceRenderer.render(card))
+                // ---- 2. paper model, in two passes ----
+                val mask0 = and(valid, not(dil(strict, 9)))
+                if (Core.countNonZero(mask0) < 20000) return@with composite(photo, quad, CardFaceRenderer.render(card))
+                val m0 = Core.mean(gray, mask0).`val`[0]
+                val seed = and(greaterThan(gray, m0), mask0)
+                if (Core.countNonZero(seed) < 5000) return@with composite(photo, quad, CardFaceRenderer.render(card))
                 val ref = Core.mean(gray, seed).`val`[0]
-                val bright = Mat().keep()
-                Core.compare(gray, Scalar(0.85 * ref), bright, Core.CMP_GT)
-                val paper0 = Mat().keep()
-                Core.bitwise_and(bright, ok, paper0)
+                val paperMask = and(greaterThan(gray, 0.85 * ref), mask0)
+                val p1 = paperModel(cardF, paperMask, 25.0)
+                val ink1 = and(lessThan(grayS, scaled(grayOf(p1), 0.90)), mask0)
+                // second pass: paper = not near any print (15 px) and not near a finger
+                val paperMask2 = and(mask0, not(dil(ink1, 15)))
+                val p2 = paperModel(cardF, paperMask2, 25.0)
+                val pg2 = grayOf(p2)
 
-                val cardF = Mat().keep()
-                cardRgb.convertTo(cardF, CvType.CV_32FC3)
-                val maskF = soft(paper0, 0.0).keep()
-                val mask3 = merge3(maskF).keep()
-                val num = Mat().keep()
-                Core.multiply(cardF, mask3, num)
-                Imgproc.GaussianBlur(num, num, Size(0.0, 0.0), 35.0)
-                val den = Mat().keep()
-                Imgproc.GaussianBlur(maskF, den, Size(0.0, 0.0), 35.0)
-                Core.max(den, Scalar(1e-3), den)
-                val paper = Mat().keep()                       // P: smooth paper estimate, no print
-                Core.divide(num, merge3(den).keep(), paper)
+                // ---- old print ----
+                val ink = and(lessThan(grayS, scaled(pg2, 0.91)), valid)
+                Imgproc.morphologyEx(ink, ink, Imgproc.MORPH_OPEN, ellipse(3).keep())
 
-                // ---- old print mask ----
-                val paper8 = Mat().keep()
-                paper.convertTo(paper8, CvType.CV_8UC3)
-                val paperGray8 = Mat().keep()
-                Imgproc.cvtColor(paper8, paperGray8, Imgproc.COLOR_RGB2GRAY)
-                val grayF = Mat().keep()
-                val paperGrayF = Mat().keep()
-                gray.convertTo(grayF, CvType.CV_32F)
-                paperGray8.convertTo(paperGrayF, CvType.CV_32F, 0.88)
-                val darker = Mat().keep()
-                Core.compare(grayF, paperGrayF, darker, Core.CMP_LT)
-                val old = Mat().keep()
-                Core.bitwise_and(darker, ok, old)
-
-                // strong red print is erased even right beside a finger
                 val chans = ArrayList<Mat>()
                 Core.split(cardRgb, chans)
                 chans.forEach { it.keep() }
@@ -157,28 +204,59 @@ object CardCompositor {
                 val rb = Mat().keep()
                 Core.subtract(r16, g16, rg)
                 Core.subtract(r16, b16, rb)
-                val redA = Mat().keep()
-                val redB = Mat().keep()
-                Core.compare(rg, Scalar(95.0), redA, Core.CMP_GT)
-                Core.compare(rb, Scalar(75.0), redB, Core.CMP_GT)
-                val red = Mat().keep()
-                Core.bitwise_and(redA, redB, red)
-                Core.bitwise_and(red, valid, red)
-                Core.bitwise_or(old, red, old)
-                Imgproc.dilate(old, old, ellipse(7).keep())
+                val red = and(and(greaterThan(rg, 85.0), greaterThan(rb, 65.0)), valid)
 
-                val oldF = soft(old, 1.5).keep()
+                val dark = and(lessThan(grayS, scaled(pg2, 0.45)), valid)
+                val dark2 = and(lessThan(gray, 55.0), valid)
+                val ringBand = and(dil(strict, 15), notStrict)
+                val ringDark = and(and(lessThan(grayS, scaled(pg2, 0.55)), ringBand), valid)
+                val diffP = Mat().keep()
+                Core.absdiff(cardF, p2, diffP)
+                val dch = ArrayList<Mat>()
+                Core.split(diffP, dch)
+                dch.forEach { it.keep() }
+                val dmax = Mat().keep()
+                Core.max(dch[0], dch[1], dmax)
+                Core.max(dmax, dch[2], dmax)
+                val dev = and(greaterThan(dmax, 30.0), and(dil(strict, 17), notStrict))
+
+                // ordinary print: stay clear of the finger edge
+                val oldA = and(and(dil(and(and(ink, not(protect)), valid), 11), not(guard)), valid)
+                // pure red / near-black / off-paper beside a finger: erase right up to the finger
+                val seedB = and(and(or(or(red, dark), or(or(dark2, ringDark), dev)), notStrict), valid)
+                val oldB = and(and(dil(seedB, 7), notStrict), valid)
+                val old = or(oldA, oldB)
+                val oldF = soft(old, 2.0).keep()
                 Core.multiply(oldF, validF, oldF)
-                Core.multiply(oldF, oneMinus(skinCoreF).keep(), oldF)
 
-                // paint the old print out: clean = card + (paper - card) * oldF
+                // ---- 3. fill: paper model + contact shadow + grain ----
+                val dist = Mat().keep()
+                Imgproc.distanceTransform(notStrict, dist, Imgproc.DIST_L2, 3)
+                val shade = Mat().keep()
+                dist.convertTo(shade, CvType.CV_32F, -0.2, 0.0)                 // -d / 5
+                Core.exp(shade, shade)
+                shade.convertTo(shade, CvType.CV_32F, -0.14, 1.0)               // 1 - 0.14 * exp(-d / 5)
+                val filled = Mat().keep()
+                Core.multiply(p2, merge3(shade).keep(), filled)
+
+                val blur3 = Mat().keep()
+                Imgproc.GaussianBlur(grayF, blur3, Size(0.0, 0.0), 3.0)
+                val grain = Mat().keep()
+                Core.subtract(grayF, blur3, grain)
+                val meanM = MatOfDouble().keep()
+                val stdM = MatOfDouble().keep()
+                Core.meanStdDev(grain, meanM, stdM, paperMask2)
+                val noise = Mat(RH, RW, CvType.CV_32F).keep()
+                Core.randn(noise, 0.0, stdM.toArray()[0] * 0.9)
+                Core.add(filled, merge3(noise).keep(), filled)
+
                 val diff = Mat().keep()
-                Core.subtract(paper, cardF, diff)
+                Core.subtract(filled, cardF, diff)
                 Core.multiply(diff, merge3(oldF).keep(), diff)
                 val clean = Mat().keep()
                 Core.add(cardF, diff, clean)
 
-                // ---- 3. print the new card ----
+                // ---- 4. print the new card ----
                 val inkBmp = CardFaceRenderer.renderInk(card, RW, RH)
                 val inkRgba = Mat().keep()
                 Utils.bitmapToMat(inkBmp, inkRgba)
@@ -188,7 +266,7 @@ object CardCompositor {
                 inkChans.forEach { it.keep() }
                 val a = soft(inkChans[3], 0.7).keep()
                 Core.multiply(a, validF, a)
-                Core.multiply(a, oneMinus(skinF).keep(), a)     // never print on a finger
+                Core.multiply(a, oneMinus(skinF).keep(), a)                     // never print on a finger
 
                 val col = CardFaceRenderer.inkColor(card)
                 val inked = Mat().keep()
@@ -203,11 +281,10 @@ object CardCompositor {
                 val finalRect = Mat().keep()
                 Core.add(clean, diff2, finalRect)
 
-                // where anything changed (old print erased or new print added)
                 val changed = Mat().keep()
                 Core.max(oldF, a, changed)
 
-                // ---- 4. back into the photo, only where changed ----
+                // ---- 5. back into the photo, only where changed ----
                 val flags = Imgproc.INTER_LINEAR or Imgproc.WARP_INVERSE_MAP
                 val finalWarp = Mat().keep()
                 val changedWarp = Mat().keep()
@@ -243,31 +320,7 @@ object CardCompositor {
         return if (w > h) listOf(q.bl, q.tl, q.tr, q.br) else listOf(q.tl, q.tr, q.br, q.bl)
     }
 
-    private fun ellipse(n: Int): Mat =
-        Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(n.toDouble(), n.toDouble()))
-
-    /** 8-bit 0/255 mask -> float 0..1, optionally blurred. */
-    private fun soft(mask8: Mat, sigma: Double): Mat {
-        val f = Mat()
-        mask8.convertTo(f, CvType.CV_32F, 1.0 / 255.0)
-        if (sigma > 0.0) Imgproc.GaussianBlur(f, f, Size(0.0, 0.0), sigma)
-        return f
-    }
-
-    private fun merge3(m: Mat): Mat {
-        val out = Mat()
-        Core.merge(listOf(m, m, m), out)
-        return out
-    }
-
-    private fun oneMinus(m: Mat): Mat {
-        val ones = Mat(m.size(), m.type(), Scalar(1.0))
-        val out = Mat()
-        Core.subtract(ones, m, out)
-        ones.release()
-        return out
-    }
-
+    /** Old method, kept as a fallback: warps a fully drawn card face over the whole card. */
     fun composite(photo: Bitmap, quad: Quad, face: Bitmap): Bitmap {
         val q = quad.points
         val widthEdge = (Quad.dist(q[0], q[1]) + Quad.dist(q[3], q[2])) / 2f
