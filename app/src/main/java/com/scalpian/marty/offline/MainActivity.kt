@@ -27,12 +27,15 @@ import androidx.compose.ui.platform.LocalContext
 import com.scalpian.marty.offline.data.CardCode
 import com.scalpian.marty.offline.data.InputMode
 import com.scalpian.marty.offline.data.MartySettings
+import com.scalpian.marty.offline.data.PlayingCard
+import com.scalpian.marty.offline.data.Suit
 import com.scalpian.marty.offline.ui.CaptureScreen
 import com.scalpian.marty.offline.ui.GalleryRevealScreen
 import com.scalpian.marty.offline.ui.HomeScreenInput
 import com.scalpian.marty.offline.ui.LockInputFlow
 import com.scalpian.marty.offline.ui.MenuScreen
 import com.scalpian.marty.offline.ui.OptionsScreen
+import com.scalpian.marty.offline.ui.PreviewScreen
 import com.scalpian.marty.offline.ui.QuadScreen
 import com.scalpian.marty.offline.ui.saveToPhoneLibrary
 import com.scalpian.marty.offline.ui.vibrateOnce
@@ -45,7 +48,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.opencv.android.OpenCVLoader
 
-private enum class Screen { MENU, OPTIONS, CAPTURE, TRAIN_CAPTURE, ADJUST, TRAIN_RESULT, INPUT, REVEAL }
+private enum class Screen { MENU, OPTIONS, CAPTURE, TRAIN_CAPTURE, ADJUST, TRAIN_RESULT, PREVIEW, INPUT, REVEAL }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,7 +95,7 @@ private fun MartyApp() {
             screen = when {
                 training -> Screen.TRAIN_RESULT
                 found == null -> Screen.ADJUST
-                else -> Screen.INPUT
+                else -> Screen.PREVIEW
             }
         }
     }
@@ -160,9 +163,9 @@ private fun MartyApp() {
             Screen.ADJUST -> photo?.let { p ->
                 QuadScreen(
                     bitmap = p,
-                    detected = null,
+                    detected = quad,
                     training = false,
-                    onConfirm = { confirmed -> quad = confirmed; screen = Screen.INPUT },
+                    onConfirm = { confirmed -> quad = confirmed; screen = Screen.PREVIEW },
                     onRetake = { screen = Screen.CAPTURE }
                 )
             }
@@ -174,8 +177,23 @@ private fun MartyApp() {
                     training = true,
                     onConfirm = {},
                     onRetake = { screen = Screen.TRAIN_CAPTURE },
-                    onUse = { screen = Screen.INPUT }
+                    onUse = { screen = Screen.PREVIEW }
                 )
+            }
+
+            Screen.PREVIEW -> {
+                val p = photo
+                val q = quad
+                if (p != null && q != null) {
+                    PreviewScreen(
+                        photo = p,
+                        quad = q,
+                        testCard = PlayingCard(9, Suit.HEARTS),
+                        onContinue = { screen = Screen.INPUT },
+                        onAdjust = { screen = Screen.ADJUST },
+                        onRetake = { screen = Screen.CAPTURE }
+                    )
+                }
             }
 
             Screen.INPUT -> when (settings.inputMode) {
