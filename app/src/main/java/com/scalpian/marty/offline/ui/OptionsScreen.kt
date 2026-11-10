@@ -86,6 +86,14 @@ fun OptionsScreen(settings: MartySettings, onBack: () -> Unit) {
         )
         SwitchRow("6-digit PIN", "Lock screen only. The last digits don't matter.", settings.sixDigits, settings::updateSixDigits)
 
+        SectionTitle("The card in your hand")
+        SwitchRow(
+            "Aces only (A♣ A♥ A♦)",
+            "Use an Ace of Clubs, Hearts or Diamonds. Only its big pip and corner indices are erased, so fingers, edges and background are never touched. Turn off to try other cards.",
+            settings.acesOnly,
+            settings::updateAcesOnly
+        )
+
         SectionTitle("The code")
         SwitchRow("+1 on the value", "Enter value + 1 (Ace = 02, Queen = 13, King = 14).", settings.plusOne, settings::updatePlusOne)
         Text("Suit order (first digit)", color = Color.White, modifier = Modifier.padding(top = 12.dp))
