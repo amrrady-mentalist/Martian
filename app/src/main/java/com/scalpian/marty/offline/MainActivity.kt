@@ -115,7 +115,7 @@ private fun MartyApp() {
                 var inkError: String? = null
                 val out = withContext(Dispatchers.Default) {
                     try {
-                        CardCompositor.compositeInk(src, q, card)
+                        CardCompositor.compositeInk(src, q, card, settings.acesOnly)
                     } catch (e: Throwable) {
                         // the new method failed: remember why, and fall back to the simple full-card paste
                         inkError = "${e.javaClass.simpleName}: ${e.message}"
@@ -189,6 +189,7 @@ private fun MartyApp() {
                         photo = p,
                         quad = q,
                         testCard = PlayingCard(9, Suit.HEARTS),
+                        acesOnly = settings.acesOnly,
                         onContinue = { screen = Screen.INPUT },
                         onAdjust = { screen = Screen.ADJUST },
                         onRetake = { screen = Screen.CAPTURE }
