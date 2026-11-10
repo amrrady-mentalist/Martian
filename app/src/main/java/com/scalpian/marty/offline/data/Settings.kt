@@ -39,6 +39,10 @@ class MartySettings(context: Context) {
     var sixDigits by mutableStateOf(prefs.getBoolean("sixDigits", false))
         private set
 
+    /** The photographed card is an Ace of clubs / hearts / diamonds: only its big pip and corner indices are erased. */
+    var acesOnly by mutableStateOf(prefs.getBoolean("acesOnly", true))
+        private set
+
     var leftHanded by mutableStateOf(prefs.getBoolean("leftHanded", false))
         private set
 
@@ -65,6 +69,7 @@ class MartySettings(context: Context) {
     fun updateInputMode(v: InputMode) { inputMode = v; prefs.edit().putString("inputMode", v.name).apply() }
     fun updatePlusOne(v: Boolean) { plusOne = v; prefs.edit().putBoolean("plusOne", v).apply() }
     fun updateSixDigits(v: Boolean) { sixDigits = v; prefs.edit().putBoolean("sixDigits", v).apply() }
+    fun updateAcesOnly(v: Boolean) { acesOnly = v; prefs.edit().putBoolean("acesOnly", v).apply() }
     fun updateLeftHanded(v: Boolean) { leftHanded = v; prefs.edit().putBoolean("leftHanded", v).apply() }
     fun updateVibrate(v: Boolean) { vibrate = v; prefs.edit().putBoolean("vibrate", v).apply() }
     fun updateSaveToGallery(v: Boolean) { saveToGallery = v; prefs.edit().putBoolean("saveToGallery", v).apply() }
