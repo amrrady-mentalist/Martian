@@ -49,6 +49,7 @@ fun PreviewScreen(
     photo: Bitmap,
     quad: Quad,
     testCard: PlayingCard,
+    acesOnly: Boolean,
     onContinue: () -> Unit,
     onAdjust: () -> Unit,
     onRetake: () -> Unit
@@ -58,11 +59,11 @@ fun PreviewScreen(
     var error by remember(photo, quad) { mutableStateOf<String?>(null) }
     var showMasks by remember { mutableStateOf(false) }
 
-    LaunchedEffect(photo, quad) {
+    LaunchedEffect(photo, quad, acesOnly) {
         output = null
         error = null
         try {
-            output = withContext(Dispatchers.Default) { CardCompositor.compositePreview(photo, quad, testCard) }
+            output = withContext(Dispatchers.Default) { CardCompositor.compositePreview(photo, quad, testCard, acesOnly) }
         } catch (e: Throwable) {
             error = "${e.javaClass.simpleName}: ${e.message}"
         }
@@ -82,7 +83,7 @@ fun PreviewScreen(
             modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp)
         )
         Text(
-            "Sample card shown. Old print should be gone and your fingers untouched.",
+            if (acesOnly) "Use an Ace of Clubs, Hearts or Diamonds. The ace's print should be gone and your fingers untouched." else "Sample card shown. Old print should be gone and your fingers untouched.",
             color = Color.White.copy(alpha = 0.65f),
             fontSize = 13.sp,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
