@@ -18,6 +18,7 @@ import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import org.opencv.photo.Photo
+import kotlin.math.max
 import kotlin.math.min
 
 /** [result] is the edited photo; [overlay] (preview only) shows what is erased (red) and protected (green). */
@@ -31,9 +32,11 @@ object CardCompositor {
     private const val CW = RW + 2 * MG
     private const val CH = RH + 2 * MG
 
-    fun compositeInk(photo: Bitmap, quad: Quad, card: PlayingCard): Bitmap = compositeCore(photo, quad, card, false).result
+    fun compositeInk(photo: Bitmap, quad: Quad, card: PlayingCard, acesOnly: Boolean): Bitmap =
+        compositeCore(photo, quad, card, false, acesOnly).result
 
-    fun compositePreview(photo: Bitmap, quad: Quad, card: PlayingCard): CompositeOutput = compositeCore(photo, quad, card, true)
+    fun compositePreview(photo: Bitmap, quad: Quad, card: PlayingCard, acesOnly: Boolean): CompositeOutput =
+        compositeCore(photo, quad, card, true, acesOnly)
 
     /**
      * "Ink swap": edit the REAL card instead of pasting a synthetic one.
@@ -50,7 +53,7 @@ object CardCompositor {
      *   - the new print is multiplied onto the paper and warped back; only changed pixels are blended.
      * Falls back to the old full-card paste if the card can't be analysed.
      */
-    private fun compositeCore(photo: Bitmap, quad: Quad, card: PlayingCard, wantOverlay: Boolean): CompositeOutput {
+    private fun compositeCore(photo: Bitmap, quad: Quad, card: PlayingCard, wantOverlay: Boolean, acesOnly: Boolean): CompositeOutput {
         val sc = Scope()
         try {
             return with(sc) {
@@ -87,6 +90,7 @@ object CardCompositor {
                 val valid = roundedRect(MG + 3)            // inside the card: used for paper statistics
                 val validOut = roundedRect(MG - 8)         // card + a few px beyond the snapped edge: where print may be erased
                 val validOutF = soft(validOut, 0.0).keep()
+                val validF = soft(valid, 0.0).keep()          // inside the card only: nothing is ever painted past its edge
 
                 val cardF = Mat().keep()
                 cardRgb.convertTo(cardF, CvType.CV_32FC3)
@@ -120,7 +124,16 @@ object CardCompositor {
                 val dA = minus(aF, pa)                       // redness relative to the local paper
                 val dLoc = magnitude(dA, minus(bF, pb))      // colour difference from the local paper
 
-                // ---- 3. dark blobs, classified by STRUCTURE ----
+                // hue difference after allowing for darkness: ~0 for print (paper hue, just darker), large for skin
+                val pLs = Mat().keep()
+                Core.max(pl, Scalar(1.0), pLs)
+                val tRatio = over(lum, pLs)
+                Core.min(tRatio, Scalar(1.05), tRatio)
+                val dDark = magnitude(minus(aF, times(pa, tRatio)), minus(bF, times(pb, tRatio)))
+                val vOutM = vo(validOut)
+                val hueOff = and(greaterThan(dDark, 9.0), vOutM)
+
+                // ---- 3. dark blobs, classified by STRUCTURE and by how skin-like their hue is ----
                 val core = and(vo(validOut), lessThan(lum, scaled(pl, 0.87)))
                 Imgproc.morphologyEx(core, core, Imgproc.MORPH_CLOSE, ellipse(3).keep())
                 val labels = Mat().keep()
@@ -140,32 +153,33 @@ object CardCompositor {
                     val bh = statData[i * 5 + 3]
                     val area = statData[i * 5 + 4]
                     if (area < 4) continue
-                    val touches = x <= band || y <= band || x + bw >= CW - band || y + bh >= CH - band
-                    val target = when {
-                        touches && area >= 2500 -> finger                // big region attached to the card edge = finger / hand / edge line
-                        area > 0.10 * RW * RH -> continue                // card-sized dark region (shadow?): leave alone
-                        else -> inkc                                     // compact blob = print
-                    }
                     if (++processed > 1500) break
+                    val touches = x <= band || y <= band || x + bw >= CW - band || y + bh >= CH - band
                     val rect = Rect(x, y, bw, bh)
                     val cm = Mat().keep()
                     Core.compare(labels.submat(rect), Scalar(i.toDouble()), cm, Core.CMP_EQ)
+                    val skinFrac = Core.countNonZero(and(cm, hueOff.submat(rect))).toDouble() / max(area, 1)
+                    val target: Mat = when {
+                        area >= 2500 && skinFrac >= 0.5 -> finger          // big skin-coloured blob = finger / hand
+                        touches && (bw > 0.5 * RW || bh > 0.5 * RH) -> continue   // long thing along the edge (edge line, hair)
+                        area > 0.10 * RW * RH -> continue                  // card-sized dark region (shadow?): leave alone
+                        else -> inkc                                       // compact paper-hued blob = print, even next to the edge
+                    }
                     val roi = target.submat(rect)
                     Core.bitwise_or(roi, cm, roi)
                 }
 
                 // ---- 4. colour: rescue print merged into a finger blob, find pale nails ----
-                val pLs = Mat().keep()
-                Core.max(pl, Scalar(1.0), pLs)
-                val tRatio = over(lum, pLs)
-                Core.min(tRatio, Scalar(1.05), tRatio)
-                val dDark = magnitude(minus(aF, times(pa, tRatio)), minus(bF, times(pb, tRatio)))
-                val vOutM = vo(validOut)
                 val blackInk = and(and(lessThan(lum, scaled(pl, 0.55)), lessThan(dDark, 9.0)), vOutM)
                 val redInk = and(greaterThan(dA, 28.0), vOutM)
                 val rescue = and(finger, or(blackInk, redInk))
                 inkc = or(inkc, rescue)
                 finger = and(finger, not(rescue))
+                // anti-aliased rim of black print that ended up inside a finger blob
+                val blackBlob = and(inkc, dil(blackInk, 5))
+                val rim = and(and(and(finger, dil(blackBlob, 9)), lessThan(dDark, 9.0)), vOutM)
+                inkc = or(inkc, rim)
+                finger = and(finger, not(rim))
                 // the pinkish rim around red print is print, not skin
                 val redBlob = and(inkc, dil(redInk, 5))
                 val halo = and(and(greaterThan(dA, 6.0), vOutM), dil(redBlob, 7))
@@ -199,11 +213,23 @@ object CardCompositor {
                 val weak = and(and(vOutM, lessThan(lum, scaled(pl, 0.972))), not(prot))
                 var ink = or(and(dil(inkc, 31), weak), inkc)
                 ink = dil(ink, 17)
-                ink = and(and(ink, not(dil(prot, 5))), vOutM)
+                ink = and(and(ink, not(dil(prot, 5))), valid)
+                if (acesOnly) {
+                    // an ace has ONE big pip in the middle and small indices in the corners: nothing else is touched
+                    val zones = Mat.zeros(CH, CW, CvType.CV_8UC1).keep()
+                    fun zone(x0: Double, y0: Double, x1: Double, y1: Double) =
+                        Imgproc.rectangle(zones, Point(MG + x0, MG + y0), Point(MG + x1, MG + y1), Scalar(255.0), -1)
+                    zone(0.15 * RW, 0.20 * RH, 0.85 * RW, 0.80 * RH)                    // the big pip
+                    zone(6.0, 6.0, 0.32 * RW, 0.28 * RH)                                // corner indices
+                    zone(0.68 * RW, 0.72 * RH, RW - 6.0, RH - 6.0)
+                    zone(0.68 * RW, 6.0, RW - 6.0, 0.28 * RH)
+                    zone(6.0, 0.72 * RH, 0.32 * RW, RH - 6.0)
+                    ink = and(ink, zones)
+                }
                 val inkF = soft(ink, 0.0).keep()
                 val oldF = soft(ink, 5.0).keep()
                 Core.max(oldF, inkF, oldF)                   // full strength inside the mask, feather only outside it
-                Core.multiply(oldF, validOutF, oldF)
+                Core.multiply(oldF, validF, oldF)
 
                 // ---- 6. fill ----
                 val cleanPaper = and(
@@ -262,7 +288,7 @@ object CardCompositor {
                 val alphaFull = Mat.zeros(CH, CW, CvType.CV_8UC1).keep()
                 inkChans[3].copyTo(alphaFull.submat(Rect(MG, MG, RW, RH)))
                 val a = soft(alphaFull, 0.7).keep()
-                Core.multiply(a, validOutF, a)
+                Core.multiply(a, validF, a)
                 val protSoft = soft(dil(prot, 5), 1.0).keep()
                 Core.multiply(a, oneMinus(protSoft).keep(), a)                  // never print on a finger or nail
 
